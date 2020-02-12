@@ -61,11 +61,11 @@ def get_steps(gmaps_route):
 
 # get my mbta api private key
 with open("/home/adam/mbtaapikey") as mbtaapifile:
-    mbtaapikey = mbtaapifile.read()
+    mbtaapikey = mbtaapifile.read().split('\n')[0]
 
 # get my google api private key
 with open("/home/adam/gapikey") as gapifile:
-    gapikey = gapifile.read()
+    gapikey = gapifile.read().split('\n')[0]
 
 # takes epoch time, returns epoch time at end of MBTA service that "day"
 # TODO: work out what end of day means.  For now, just add a day
@@ -93,25 +93,32 @@ def time_step(queue_time,step):
         else:
             route_url_id = step.route_id
         req_url = "http://realtime.mbta.com/developer/api/v2.1/traveltimes?api_key=" + mbtaapikey + "&format=json&from_stop=" + step.init_id + "&to_stop=" + step.final_id + "&from_datetime=" + str(queue_time) + "&to_datetime=" + str(end_of_day(queue_time)) + "&route=" + route_url_id
-        print(req_url)
+        #print(req_url)
         req_json = json.loads(requests.get(req_url).text)
+        #print(req_json)
         earliest_arrival = min([trip for trip in req_json['travel_times']],key=lambda lst: lst['arr_dt'])
         return (earliest_arrival['dep_dt'],earliest_arrival['arr_dt'],earliest_arrival['travel_time_sec'],earliest_arrival['benchmark_travel_time_sec'])
         
-    # now request realtime.mbta data
-#    req = requests.get(""http://realtime.mbta.com/developer/api/v2.1/traveltimes?api_key=wX9NwuHnZU2ToO7GmGR9uw&format=json&from_stop=")
-
-# you could alternatively read this off from google...:
 def arrival_time(dept_time, route):
-    total_time = sum(time_route(dept_time,route))
+    try:
+        total_time = sum(time_route(dept_time,route))
+    except ValueError:
+        raise
+    except KeyError:
+        raise
     print(total_time)
-    return (dept_time + total_time)
+    return (int(dept_time) + int(total_time))
 
 def time_route(queue_time,route):
     time_ellapsed = 0
     times = []
     for step in route['legs'][0]['steps']:
-        parsed = parse_step(step)
+        try:
+            parsed = parse_step(step)
+        except ValueError:
+            raise
+        except KeyError:
+            raise
         if parsed.type == "WALKING":
             times.append(parsed.step_time)
         else:
@@ -140,29 +147,29 @@ def fancy_classify_step(gmaps_step):
         else: raise ValueError('not a recognized TRANSIT mode')"""
 
 
-# easy to get 'type', probably using the wrong GTFS field tho
-# can get from 'trip_details': 
-#           trips.txt: route_id (probably), trip_headsign
-#               derive direction_id
-#           
 
 def find_stop(stop_name,headsign,line_type,line=''):
     candidate_stops = set([stop[0] for stop in stops_data if stop[2] == stop_name and stop[1] != ''])
+    #print(stop_name + ', ' + headsign + ', ' + line_type)
     if len(candidate_stops) == 1:
-        return candidate_stops.pop()
+        c = candidate_stops.pop()
+        return terminal_dict.get(c, c)
     else:
-        if line_type[0:3] == 'BUS':
-            relevant_trip_ids = set([trip[2] for trip in trips_data if trip[0] == line and trip[3] == headsign])
-            relevant_stops = set([stop_time[3] for stop_time in get_stop_times_data() if stop_time[0] in relevant_trip_ids])
-            hopefully_only_one = [candidate for candidate in relevant_stops if candidate in candidate_stops]
-            return hopefully_only_one.pop()
-        if line == '':
-            preprocessed = {stop[0] : stop[3] for stop in stops_data}
-            (_,_,c) = process.extractOne(stop_name + " - " + headsign, preprocessed,scorer=fuzz.partial_ratio)
-        else:
-            preprocessed = {stop[0] : stop[3] for stop in stops_data}
-            (_,_,c) = process.extractOne(stop_name + " - " + line + "-" + headsign, preprocessed,scorer=fuzz.token_sort_ratio)
-        return c
+#        if line_type[0:3] == 'BUS':
+         relevant_trip_ids = set([trip[2] for trip in trips_data if trip[0] == line and trip[3] == headsign])
+         relevant_stops = set([stop_time[3] for stop_time in get_stop_times_data() if stop_time[0] in relevant_trip_ids])
+         hopefully_only_one = [candidate for candidate in relevant_stops if candidate in candidate_stops]
+         try:
+             c = hopefully_only_one.pop()
+             return terminal_dict.get(c,c)
+         except IndexError: 
+            if not line:
+               preprocessed = {stop[0] : stop[3] for stop in stops_data}
+               (_,_,c) = process.extractOne(stop_name + " - " + headsign, preprocessed,scorer=fuzz.partial_ratio)
+            else:
+                preprocessed = {stop[0] : stop[3] for stop in stops_data}
+                (_,_,c) = process.extractOne(stop_name + " - " + line + "-" + headsign, preprocessed,scorer=fuzz.token_sort_ratio)
+                return terminal_dict.get(c,c)
 
 def parse_step(gmaps_step):
     step_type = fancy_classify_step(gmaps_step)
@@ -173,18 +180,23 @@ def parse_step(gmaps_step):
         arrival_name = gmaps_step['transit_details']['arrival_stop']['name']
         # hopefully [routes][0][legs][0][steps][n]['transit_details']['line']['name']
         # matches MBTA route_ids
-        if gmaps_step['transit_details']['line']['vehicle']['type'] in ['SUBWAY', 'HEAVY_RAIL']:
+        pre_type = gmaps_step['transit_details']['line']['vehicle']['type'] 
+        if pre_type in ['SUBWAY', 'HEAVY_RAIL']:
             route_short_name = gmaps_step['transit_details']['line']['name']
+        elif pre_type == 'TRAM':
+            route_short_name = light_rail_name_dict[gmaps_step['transit_details']['line']['name']]
         else:
             try: 
                 route_short_name = gmaps_step['transit_details']['line']['short_name']
             except KeyError:
-                print(gmaps_step)
+                raise
         route_headsign = gmaps_step['transit_details']['headsign']
         try:
             finded = next(iter([route for route in get_routes_data() if (route[0] == route_short_name or route[3] == route_short_name)]))
             route_name = finded[0]
         except StopIteration: 
+            if route_name_short == 'Peter Pan':
+                raise ValueError
             routes_name_set = set()
             for route in routes_data:
                 routes_name_set.add(route[3])
@@ -192,7 +204,7 @@ def parse_step(gmaps_step):
             near_matches = [x[0] for x in process.extract(route_short_name,routes_name_set, limit = 4)] # obviously this block and the one in the next function should be abstracted out
             route_name = pick_list(near_matches)
         # just added [0]
-        print([departure_name,route_headsign,step_type,route_short_name])
+        #print([departure_name,route_headsign,step_type,route_short_name])
         departure_id = find_stop(departure_name, route_headsign, step_type, route_short_name)
         arrival_id = find_stop(arrival_name, route_headsign, step_type, route_short_name)
         return Step(departure_name, departure_id, arrival_name, arrival_id, route_name, step_type,0)
@@ -256,32 +268,48 @@ heavy_rail_name_dict = {
         'Providence/Stoughton Line': 'CR-Providence'
         }
 
-## some testing constants
-departure_time=int(yesterday(time.time())) # TZ=':US/Eastern' date -d "2019-06-20 08:00" +%s
-test_directions = json.loads(requests.get("https://maps.googleapis.com/maps/api/directions/json?origin=Porter_Square_Cambridge_MA&destination=Boston_College&alternatives=true&mode=transit&departure_time=" + str(departure_time) + "&key=" + gapikey).text)
-#
+
+# some terminal stations do not have reliable performance info for departures
+# so queries come up as empty, very bad
+# shift to nearest station going the right direction
+# TODO: add warning when user searches for one of these
+terminal_dict = {
+        '70106' : '70110' # Boston College -> South Street
+        }
 
 def main():
     print("Time to get to work!")
-    destination = input("Where would you like to go?")
-    origin = input("Where are you starting from?")
+    destination = input("Where would you like to go? ")
+    origin = input("Where are you starting from? ")
     dept_time_string = input('What time of day are you planning to leave?  For example, 8:00AM.  Leave empty for "right now."')
     if dept_time_string == "":
         dept_time_time = int(time.time())
     else:
         dept_time_time = parser.parse(dept_time_string).timestamp()
+    
+    if destination == "": destination = "Porter Square"
+    if origin == "": origin = "Boston College"
+
     dept_times = [yesterday(dept_time_time)]
-    for i in range(1,7):
+    for i in range(1,7): # get departure times for last seven days
         dept_times.append(yesterday(dept_times[-1]))
     dept_times = map(str,dept_times)
+    
     lengths = []
     for dept_time in dept_times:
         direction_url = 'https://maps.googleapis.com/maps/api/directions/json?origin=' + origin + '&destination=' + destination + '&alternatives=true&mode=transit&departure_time=' + dept_time + '&key=' + gapikey
-        print(direction_url)
+        #print(direction_url)
+   
         directions = json.loads(requests.get(direction_url).text)
         day_lengths = []
-        for route in directions['routes']:
-            day_lengths.append(arrival_time(dept_time,route))
+        for route in directions['routes'][0:5]:  # TODO: assumes first five routes are best
+            try:
+                a_time = arrival_time(dept_time,route)
+                day_lengths.append(a_time)
+            except ValueError:
+                pass
+            except KeyError:
+                pass
         lengths.append(day_lengths)
     print(lengths)
 
